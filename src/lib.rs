@@ -23,15 +23,16 @@ struct CallbackData {
 }
 
 unsafe extern "C" fn callback(info: *mut dl_phdr_info, _size: usize, data: *mut c_void) -> c_int {
+    let info = &*info;
     let data = &mut *(data.cast::<CallbackData>());
 
-    let phdrs = slice::from_raw_parts((*info).dlpi_phdr, (*info).dlpi_phnum as usize);
+    let phdrs = slice::from_raw_parts(info.dlpi_phdr, info.dlpi_phnum as usize);
 
     let text = match phdrs
         .iter()
         .filter(|hdr| hdr.p_type == PT_LOAD)
-        .find(|hdr| contains_addr(data.addr, (*info).dlpi_addr, hdr))
-        .map(|hdr| section_slice((*info).dlpi_addr, hdr))
+        .find(|hdr| contains_addr(data.addr, info.dlpi_addr, hdr))
+        .map(|hdr| section_slice(info.dlpi_addr, hdr))
     {
         Some(text) => text,
         None => return 0,
@@ -40,7 +41,7 @@ unsafe extern "C" fn callback(info: *mut dl_phdr_info, _size: usize, data: *mut 
     let eh_frame_hdr = match phdrs
         .iter()
         .find(|hdr| hdr.p_type == PT_GNU_EH_FRAME)
-        .map(|hdr| section_slice((*info).dlpi_addr, hdr))
+        .map(|hdr| section_slice(info.dlpi_addr, hdr))
     {
         Some(eh_frame_hdr) => eh_frame_hdr,
         None => return 1,
@@ -61,8 +62,8 @@ unsafe extern "C" fn callback(info: *mut dl_phdr_info, _size: usize, data: *mut 
 
     let eh_frame = match phdrs
         .iter()
-        .find(|hdr| contains_addr(eh_frame_base, (*info).dlpi_addr, hdr))
-        .map(|hdr| section_slice((*info).dlpi_addr, hdr))
+        .find(|hdr| contains_addr(eh_frame_base, info.dlpi_addr, hdr))
+        .map(|hdr| section_slice(info.dlpi_addr, hdr))
     {
         Some(eh_frame) => eh_frame,
         None => return 1,
