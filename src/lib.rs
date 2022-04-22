@@ -1,15 +1,16 @@
+use crate::architecture::{Architecture, NativeArchitecture, Registers};
 use core::slice;
 use gimli::{
-    BaseAddresses, CfaRule, EhFrame, EhFrameHdr, EhFrameOffset, NativeEndian, Pointer, Register,
-    RegisterRule, UnwindContext, UnwindSection, X86_64,
+    BaseAddresses, CfaRule, EhFrame, EhFrameHdr, EhFrameOffset, NativeEndian, Pointer,
+    RegisterRule, UnwindContext, UnwindSection,
 };
 use libc::{
     c_int, c_void, dl_iterate_phdr, dl_phdr_info, getcontext, Elf64_Addr, Elf64_Phdr,
-    PT_GNU_EH_FRAME, PT_LOAD, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15, REG_R8, REG_R9,
-    REG_RAX, REG_RBP, REG_RBX, REG_RCX, REG_RDI, REG_RDX, REG_RIP, REG_RSI, REG_RSP,
+    PT_GNU_EH_FRAME, PT_LOAD,
 };
 use std::mem::{self, MaybeUninit};
-use std::ops::{Index, IndexMut};
+
+mod architecture;
 
 struct Sections {
     text: &'static [u8],
@@ -101,22 +102,6 @@ fn find_sections(addr: usize) -> Option<Sections> {
     data.sections
 }
 
-struct Registers([Option<u64>; 17]);
-
-impl Index<Register> for Registers {
-    type Output = Option<u64>;
-
-    fn index(&self, index: Register) -> &Self::Output {
-        &self.0[index.0 as usize]
-    }
-}
-
-impl IndexMut<Register> for Registers {
-    fn index_mut(&mut self, index: Register) -> &mut Self::Output {
-        &mut self.0[index.0 as usize]
-    }
-}
-
 pub fn trace() {
     let mut ctx = MaybeUninit::uninit();
     let ctx = unsafe {
@@ -126,29 +111,10 @@ pub fn trace() {
 
     let mut unwind_cxt = UnwindContext::new();
 
-    let mut registers = Registers([
-        Some(ctx.uc_mcontext.gregs[REG_RAX as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RDX as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RCX as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RBX as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RSI as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RDI as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RBP as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RSP as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R8 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R9 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R10 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R11 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R12 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R13 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R14 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_R15 as usize] as u64),
-        Some(ctx.uc_mcontext.gregs[REG_RIP as usize] as u64),
-    ]);
+    let mut registers = NativeArchitecture::registers(&ctx);
+    let mut next_ip = Some(NativeArchitecture::instruction_pointer(&ctx));
 
-    while let Some(mut ip) = registers[X86_64::RA] {
-        ip -= 1;
-
+    while let Some(ip) = next_ip {
         let sections = match find_sections(ip as usize) {
             Some(sections) => sections,
             None => break,
@@ -221,31 +187,43 @@ pub fn trace() {
         };
 
         let cfa = match row.cfa() {
-            CfaRule::RegisterAndOffset { register, offset } => registers[*register]
+            CfaRule::RegisterAndOffset { register, offset } => registers
+                .get(*register)
+                .copied()
+                .unwrap_or(None)
                 .map(|v| v.wrapping_add(*offset as u64))
                 .unwrap(),
             CfaRule::Expression(_) => todo!(),
         };
 
-        // FIXME registers bounds checks
-        let mut new_registers = Registers([None; 17]);
+        let mut new_registers = <NativeArchitecture as Architecture>::Registers::default();
         for (register, rule) in row.registers() {
-            new_registers[*register] = match rule {
+            let target = match new_registers.get_mut(*register) {
+                Some(target) => target,
+                None => continue,
+            };
+
+            *target = match rule {
                 RegisterRule::Undefined => None,
-                RegisterRule::SameValue => registers[*register],
+                RegisterRule::SameValue => registers.get(*register).copied().unwrap_or(None),
                 RegisterRule::Offset(v) => {
                     Some(unsafe { *(cfa.wrapping_add(*v as u64) as *const u64) })
                 }
                 RegisterRule::ValOffset(v) => Some(cfa.wrapping_add(*v as u64)),
-                RegisterRule::Register(r) => registers[*r],
+                RegisterRule::Register(r) => registers.get(*r).copied().unwrap_or(None),
                 RegisterRule::Expression(_) => todo!(),
                 RegisterRule::ValExpression(_) => todo!(),
                 RegisterRule::Architectural => todo!(),
             };
         }
-        new_registers[X86_64::RSP] = Some(cfa);
+        new_registers.set_cfa(cfa);
 
         registers = new_registers;
+        next_ip = registers
+            .get(entry.cie().return_address_register())
+            .copied()
+            .unwrap_or(None)
+            .map(|i| i - 1);
     }
 }
 
