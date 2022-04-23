@@ -11,6 +11,7 @@ pub trait Architecture {
 
     const RA_REGISTER: Register;
     const CFA_REGISTER: Option<Register>;
+    const ADDRESS_SIZE: u8;
 
     fn instruction_pointer(context: &ucontext_t) -> u64;
 

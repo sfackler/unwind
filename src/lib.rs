@@ -8,7 +8,7 @@ use libc::{
     c_int, c_void, dl_iterate_phdr, dl_phdr_info, getcontext, ucontext_t, Elf64_Addr, Elf64_Phdr,
     PT_GNU_EH_FRAME, PT_LOAD,
 };
-use std::marker::PhantomData;
+use std::marker::{PhantomData, PhantomPinned};
 use std::mem;
 use std::pin::Pin;
 
@@ -105,14 +105,17 @@ fn find_sections(addr: usize) -> Option<Sections> {
 }
 
 #[repr(transparent)]
-pub struct Context(ucontext_t);
+pub struct Context {
+    ctx: ucontext_t,
+    _p: PhantomPinned,
+}
 
 #[macro_export]
 macro_rules! get_context {
     ($name:ident) => {
         let mut $name = std::mem::MaybeUninit::<$crate::Context>::uninit();
         let $name = unsafe {
-            getcontext(std::ptr::addr_of_mut!((*$name.as_mut_ptr()).0));
+            getcontext(std::ptr::addr_of_mut!((*$name.as_mut_ptr()).ctx));
             std::pin::Pin::new_unchecked($name.assume_init_ref())
         };
     };
@@ -131,8 +134,8 @@ where
 impl<'a> Cursor<'a, NativeArchitecture> {
     pub fn local(ctx: Pin<&'a Context>) -> Self {
         Cursor {
-            ip: Some(NativeArchitecture::instruction_pointer(&ctx.0)),
-            registers: NativeArchitecture::registers(&ctx.0),
+            ip: Some(NativeArchitecture::instruction_pointer(&ctx.ctx)),
+            registers: NativeArchitecture::registers(&ctx.ctx),
             unwind_ctx: UnwindContext::new(),
             _p: PhantomData,
         }
@@ -155,7 +158,7 @@ where
             sections.eh_frame_hdr,
             <A as Architecture>::Endianity::default(),
         )
-        .parse(&bases, mem::size_of::<usize>() as u8)
+        .parse(&bases, A::ADDRESS_SIZE)
         .ok()?;
 
         // FIXME linear search if no table

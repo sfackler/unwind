@@ -13,6 +13,7 @@ impl Architecture for X86_64 {
 
     const RA_REGISTER: Register = gimli::X86_64::RA;
     const CFA_REGISTER: Option<Register> = Some(gimli::X86_64::RSP);
+    const ADDRESS_SIZE: u8 = 8;
 
     fn instruction_pointer(ctx: &ucontext_t) -> u64 {
         ctx.uc_mcontext.gregs[REG_RIP as usize] as u64
