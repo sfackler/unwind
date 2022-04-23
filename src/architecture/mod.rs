@@ -1,4 +1,4 @@
-use gimli::Register;
+use gimli::{Endianity, Register};
 use libc::ucontext_t;
 
 mod x86_64;
@@ -6,7 +6,8 @@ mod x86_64;
 pub type NativeArchitecture = x86_64::X86_64;
 
 pub trait Architecture {
-    type Registers: Registers;
+    type Registers: Registers + Default;
+    type Endianity: Endianity;
 
     const RA_REGISTER: Register;
     const CFA_REGISTER: Option<Register>;
