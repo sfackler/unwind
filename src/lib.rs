@@ -5,11 +5,12 @@ use gimli::{
     RegisterRule, UnwindContext, UnwindSection,
 };
 use libc::{
-    c_int, c_void, dl_iterate_phdr, dl_phdr_info, getcontext, Elf64_Addr, Elf64_Phdr,
+    c_int, c_void, dl_iterate_phdr, dl_phdr_info, getcontext, ucontext_t, Elf64_Addr, Elf64_Phdr,
     PT_GNU_EH_FRAME, PT_LOAD,
 };
 use std::marker::PhantomData;
-use std::mem::{self, MaybeUninit};
+use std::mem;
+use std::pin::Pin;
 
 mod architecture;
 
@@ -103,6 +104,20 @@ fn find_sections(addr: usize) -> Option<Sections> {
     data.sections
 }
 
+#[repr(transparent)]
+pub struct Context(ucontext_t);
+
+#[macro_export]
+macro_rules! get_context {
+    ($name:ident) => {
+        let mut $name = std::mem::MaybeUninit::<$crate::Context>::uninit();
+        let $name = unsafe {
+            getcontext(std::ptr::addr_of_mut!((*$name.as_mut_ptr()).0));
+            std::pin::Pin::new_unchecked($name.assume_init_ref())
+        };
+    };
+}
+
 pub struct Cursor<'a, A>
 where
     A: Architecture,
@@ -111,6 +126,17 @@ where
     registers: A::Registers,
     unwind_ctx: UnwindContext<EndianSlice<'static, A::Endianity>>,
     _p: PhantomData<&'a ()>,
+}
+
+impl<'a> Cursor<'a, NativeArchitecture> {
+    pub fn local(ctx: Pin<&'a Context>) -> Self {
+        Cursor {
+            ip: Some(NativeArchitecture::instruction_pointer(&ctx.0)),
+            registers: NativeArchitecture::registers(&ctx.0),
+            unwind_ctx: UnwindContext::new(),
+            _p: PhantomData,
+        }
+    }
 }
 
 impl<'a, A> Cursor<'a, A>
@@ -203,20 +229,9 @@ where
 }
 
 pub fn trace() {
-    let mut ctx = MaybeUninit::uninit();
-    let ctx = unsafe {
-        getcontext(ctx.as_mut_ptr());
-        ctx.assume_init_ref()
-    };
+    get_context!(ctx);
 
-    let cursor: Cursor<NativeArchitecture> = Cursor {
-        ip: Some(NativeArchitecture::instruction_pointer(&ctx)),
-        registers: NativeArchitecture::registers(&ctx),
-        unwind_ctx: UnwindContext::new(),
-        _p: PhantomData,
-    };
-
-    for ip in cursor {
+    for ip in Cursor::local(ctx) {
         let mut ran = false;
         backtrace::resolve(ip as *mut _, |symbol| {
             if let Some(name) = symbol.name() {
